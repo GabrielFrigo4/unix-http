@@ -5,11 +5,11 @@
 
 | Script | Local de Execução | Descrição |
 | --- | --- | --- |
-| **[`download.sh`](https://www.google.com/search?q=./download.sh)** | Host | Baixa a ISO mais recente do FreeBSD 15, verifica o Checksum (SHA256) e extrai o arquivo `.xz`. |
-| **[`install.sh`](https://www.google.com/search?q=./install.sh)** | Host | Cria a VM no KVM via `virt-install` (4 vCPUs, 8GB RAM, 32GB Disk, UEFI). |
-| **[`connect.sh`](https://www.google.com/search?q=./connect.sh)** | Host | Inicia a VM, abre o console gráfico e tenta conexão automática via SSH. |
-| **[`setup.sh`](https://www.google.com/search?q=./setup.sh)** | Guest (VM) | **O coração do setup.** Configura drivers, Desktop (GNOME), Editores, Shell e Ferramentas. |
-| **[`uninstall.sh`](https://www.google.com/search?q=./uninstall.sh)** | Host | Remove completamente a VM e seus discos do sistema. |
+| **[`download.sh`](./download.sh)** | Host | Baixa a ISO mais recente do FreeBSD 15, verifica o Checksum (SHA256) e extrai o arquivo `.xz`. |
+| **[`install.sh`](./install.sh)** | Host | Cria a VM no KVM via `virt-install` (4 vCPUs, 8GB RAM, 32GB Disk, UEFI). |
+| **[`connect.sh`](./connect.sh)** | Host | Inicia a VM, abre o console gráfico e tenta conexão automática via SSH. |
+| **[`setup.sh`](./setup.sh)** | Guest (VM) | **O coração do setup.** Configura drivers, Desktop (GNOME), Editores, Shell e Ferramentas. |
+| **[`uninstall.sh`](./uninstall.sh)** | Host | Remove completamente a VM e seus discos do sistema. |
 
 
 ## 🚀 **Como Utilizar**

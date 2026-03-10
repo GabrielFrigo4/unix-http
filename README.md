@@ -1,29 +1,29 @@
 # 🌐 **Projeto: Implementação de um Web Server HTTP Concorrente (C/POSIX)**
 
 ## 🧠 **A Filosofia e o Desafio Arquitetural**
- No ecossistema de desenvolvimento moderno, a comunicação de rede é frequentemente ofuscada por pesadas abstrações (frameworks web, reverse proxies, runtimes gerenciados). O objetivo primário deste projeto não é competir com o Nginx ou Apache, mas sim **desconstruir a abstração**. 
+ No ecossistema de desenvolvimento moderno, a comunicação de rede é frequentemente ofuscada por pesadas abstrações (frameworks web, reverse proxies, runtimes gerenciados). O objetivo primário deste projeto não é competir com o Nginx ou Apache, mas sim **desconstruir a abstração**.
 
  Desenvolver um servidor HTTP/1.1 em **C puro** exige confrontar diretamente a dura realidade da engenharia de sistemas: a rede é não-confiável, a memória é finita e a concorrência gera condições de corrida. Este projeto é um estudo rigoroso sobre:
- 
+
  1. **O Modelo OSI na Prática:** A transição do fluxo de bytes brutos da Camada 4 (TCP) para o protocolo semântico da Camada 7 (HTTP), lidando com fragmentação de pacotes, reconstrução de *streams* e latência.
  2. **Gerenciamento de Estado sem Garbage Collector:** Como alocar, rastrear e liberar memória (buffers de requisição e resposta) em um ambiente de alta concorrência sem introduzir *Memory Leaks* ou *Use-After-Free*.
  3. **A Evolução da Concorrência:** O projeto está estruturado em uma jornada arquitetural clara. Começamos estabelecendo uma base sólida com as regras universais do UNIX (Versão 1 - POSIX Multiprocesso) para, em seguida, quebrarmos essas regras em busca de performance extrema utilizando APIs específicas de Kernel (Versão 2 - Event-Driven/kqueue).
 
 ---
 
-# 🎯 **O Projeto (Versão 1 - Portabilidade e Fundamentos)**
- Esta primeira iteração foca na construção de um servidor web robusto, determinístico e portável. A implementação utiliza a **API de Sockets de Berkeley** genérica (POSIX) e operações de I/O padrão, garantindo que o código seja compilável via GCC/Gmake e rode nativamente tanto em FreeBSD quanto em distribuições Linux.
+# 🎯 **O Projeto (Versão 1 - Portabilidade e Sincronismo)**
+ Esta primeira iteração foca na construção de um servidor web robusto, determinístico e portável. A implementação utiliza a **API de Sockets de Berkeley** genérica (POSIX) e operações de I/O padrão, garantindo que o código rode nativamente tanto em **FreeBSD** quanto em **Linux**.
 
- Diferente de implementações iterativas básicas, este servidor gerencia o ciclo de vida completo de recursos através de uma Máquina de Estados Finitos (FSM) própria, suportando os seguintes métodos de requisição:
+ A grande inovação técnica desta versão é o uso do **Self-Pipe Trick**, que permite tratar sinais assíncronos (como a morte de processos filhos) de forma síncrona dentro de um loop de eventos, eliminando condições de corrida clássicas em C. O servidor serve como base para uma aplicação de **Jogo da Velha Multiplayer**, sincronizando o estado via JSON.
 
 ## ⚡ **Definição dos Métodos Suportados**
  | Método | Comportamento no Servidor | Finalidade Técnica |
- | :--- | :--- | :--- |
- | **GET** | Leitura via I/O padrão (`fread`) | Recuperação de recursos estáticos do diretório raiz. |
- | **POST** | Processamento de buffers de entrada | Submissão de dados para criação de novos estados ou recursos. |
- | **PUT** | Escrita integral de arquivos | Atualização completa de um recurso em uma URI específica. |
+ | --- | --- | --- |
+ | **GET** | Leitura via I/O padrão (`fread`) | Recuperação de recursos estáticos ou estado JSON da sala. |
+ | **POST** | Escrita integral (`fopen "w"`) | Criação de novos estados (ex: abrir uma nova sala). |
+ | **PUT** | Escrita Idempotente | Atualização completa de um recurso (ex: realizar uma jogada). |
  | **PATCH** | Modificação atômica parcial | Atualização segmentada de recursos existentes. |
- | **DELETE** | Remoção via syscall `unlink` | Exclusão definitiva de um recurso no sistema de arquivos. |
+ | **DELETE** | Remoção via syscall `remove` | Exclusão definitiva de um recurso (ex: fechar uma sala). |
 
 ---
 
@@ -32,6 +32,7 @@
 
 ## 📜 **1. A Origem Histórica: O Berço dos Sockets**
  O **BSD (Berkeley Software Distribution)** foi o laboratório onde a pilha TCP/IP moderna foi forjada. A **API de Sockets**, adotada universalmente hoje, foi introduzida no **4.2BSD** em 1983. Desenvolver sobre o FreeBSD é trabalhar na implementação "de referência" das redes UNIX.
+
  > **Referência Oficial:** [FreeBSD Developers Handbook - Sockets Programming](https://docs.freebsd.org/en/books/developers-handbook/sockets/)
 
 ## 🏗️ **2. O "Base System" Coeso**
@@ -42,116 +43,93 @@
 
 ## 🛡️ **4. Paradigmas Superiores de Arquitetura (Roadmap V2)**
  O FreeBSD expõe primitivas de Kernel consideradas o estado da arte para escalabilidade e segurança de rede:
+
  * **kqueue vs epoll:** O `kqueue` do FreeBSD não monitora apenas Sockets de rede, mas unifica o monitoramento de processos (`SIGCHLD`), timers, I/O assíncrono e eventos de sistema de arquivos (vnodes) em uma única API elegante.
  * **Segurança Ofensiva/Defensiva (Capsicum):** Enquanto containers dependem de namespaces complexos, o FreeBSD permite que um servidor drope seus próprios privilégios e entre em um "Capability Mode" (`Capsicum`). Se um atacante explorar um *Buffer Overflow* na função de *parsing* HTTP deste servidor, o *Capsicum* bloqueará fisicamente no Kernel qualquer tentativa de abrir novos arquivos ou sockets maliciosos.
 
 ---
 
 # 🚀 **Destaques da Implementação Técnica (V1)**
- Para garantir um aprendizado sólido dos fundamentos de sistemas *Unix-like*, o servidor foi construído sobre as seguintes decisões arquiteturais:
+ Para garantir resiliência e portabilidade, o servidor foi construído sobre uma arquitetura de **Event Loop Síncrono** mesmo utilizando multiprocessamento.
 
-## ⚡ **Gerenciamento de Concorrência: Fork-per-Request**
- * **Modelo Multiprocesso (POSIX):** O servidor utiliza a system call `fork(2)` para delegar cada nova conexão a um processo filho isolado. O Kernel hospedeiro gerencia o escalonamento nos múltiplos núcleos da CPU.
- * **Isolamento de Memória:** Falhas de segmentação (*Segfaults*) durante o processamento de uma requisição HTTP não derrubam o daemon principal.
- * **Gestão de Zumbis:** Implementação rigorosa de handlers para o sinal `SIGCHLD`, garantindo o recolhimento (*reap*) correto de processos finalizados e evitando o esgotamento da tabela de processos do SO.
+## ⚡ **Gerenciamento de Concorrência: Self-Pipe Trick + poll()**
+ * **Self-Pipe Trick:** Sinais UNIX são inerentemente assíncronos e perigosos. Para domá-los, o servidor cria um `pipe()` interno. O tratador de sinais (`SIGCHLD`) apenas escreve um byte no cano.
+ * **Loop Unificado:** O daemon principal utiliza `poll()` para monitorar simultaneamente o socket do servidor e a ponta de leitura do `pipe`. Isso transforma interrupções de hardware em eventos de I/O síncronos.
+ * **Isolamento via Fork:** Cada conexão é processada por um worker isolado. Se um processo filho falha, o Kernel emite o sinal, o `poll()` detecta o evento no cano e o pai realiza o `waitpid()` (reaping) de forma limpa, sem nunca bloquear.
 
-### 🗺️ **Arquitetura de Concorrência do Sistema**
+### 🗺️ **Arquitetura de Concorrência Síncrona**
  ```mermaid
- graph TD
-     subgraph Internet Layer
-         C1[Client 1]
-         C2[Client 2]
-         CN[Client N]
+ sequenceDiagram
+     participant C as Cliente HTTP
+     participant M as Master Daemon (poll)
+     participant P as Self-Pipe (Internal)
+     participant OS as Kernel (POSIX)
+     participant W as Worker (Fork)
+
+     M->>P: setup pipe() & sigaction()
+     loop Event Loop
+         M->>OS: poll(server_fd, pipe_read_fd)
+
+         alt Novo Cliente (Rede)
+             OS-->>M: POLLIN no server_fd
+             M->>W: syscall: fork()
+             W->>C: Zero-Copy Parsing & Response
+             W->>OS: _exit(0)
+
+         else Sinal (Worker Morreu)
+             OS->>M: Envia SIGCHLD
+             M->>P: write(pipe_write_fd, signo)
+             OS-->>M: POLLIN no pipe_read_fd
+             M->>P: read() consome sinal do cano
+             M->>OS: waitpid(WNOHANG) -> Zombie Reaped!
+         end
      end
-
-     subgraph OS Kernel / User Space
-         subgraph Master Daemon Process
-             L[Socket Bind/Listen]
-             A[Accept Loop block]
-             S[SIGCHLD Reaper]
-         end
-
-         subgraph Isolated Child Processes
-             W1[Child PID: 1001\nHTTP FSM]
-             W2[Child PID: 1002\nHTTP FSM]
-             WN[Child PID: 100N\nHTTP FSM]
-         end
-
-         subgraph Storage
-             FS[(File System\nStatic Assets)]
-         end
-     end
-
-     C1 -->|TCP SYN| L
-     C2 -->|TCP SYN| L
-     CN -->|TCP SYN| L
-
-     L --> A
-     A -->|Syscall: fork| W1
-     A -->|Syscall: fork| W2
-     A -->|Syscall: fork| WN
-
-     W1 <-->|fread/fwrite| FS
-     W2 <-->|fread/fwrite| FS
-     WN <-->|unlink| FS
-
-     W1 -.->|exit_success| S
-     W2 -.->|exit_success| S
-     WN -.->|exit_error| S
-     S -.->|waitpid| A
  ```
 
-## 🧩 **Parsing de Protocolo via Máquina de Estados (FSM)**
- * **Reconstrução de Fluxo:** Implementação de uma Máquina de Estados Finitos para processar o fluxo de bytes bruto do socket, permitindo tratar requisições fragmentadas ou ataques de *Slowloris* de forma resiliente.
- * **Análise de Headers:** Parsing manual de cabeçalhos HTTP/1.1 (como `Content-Length`), garantindo controle total sobre o layout de memória sem overhead de bibliotecas de terceiros.
-
-### 🧠 **Mecânica de Memória: In-situ Parsing (Zero-Copy)**
- Para garantir que o servidor opere em complexidade espacial $\mathcal{O}(1)$ durante o parsing das requisições, abandonamos o uso de `malloc` ou duplicação de strings (comum em linguagens de alto nível).
-
- Utilizamos uma técnica destrutiva no buffer original da pilha (Stack). Os delimitadores da RFC 7230 (`\r\n`, espaços e `:`) são substituídos por terminadores nulos (`\0`). A estrutura de domínio `http_request_t` mapeia seus ponteiros diretamente para os endereços de memória mutados dentro desse buffer.
-
- ```mermaid
- graph TD
-     subgraph s1 ["1. Ingestao TCP (Raw Buffer)"]
-         B["buffer[4096]: GET /index.html HTTP/1.1 [CRLF] Host: localhost [CRLF][CRLF]"]
-     end
-
-     subgraph s2 ["2. Tokenizacao Destrutiva (In-situ Mutation)"]
-         M["Mutated Buffer: GET [NUL] /index.html [NUL] HTTP/1.1 [NUL] Host [NUL] localhost [NUL][NUL]"]
-     end
-
-     subgraph s3 ["3. Mapeamento da Struct (Zero-Copy)"]
-         R_METHOD["req.method = HTTP_GET (Enum)"]
-         R_PATH["req.path = &buffer[4]"]
-         R_VER["req.version = &buffer[16]"]
-         R_HEAD_K["req.headers[0].key = &buffer[25]"]
-         R_HEAD_V["req.headers[0].value = &buffer[30]"]
-     end
-
-     B -->|Acumula no buffer ate CRLF CRLF| M
-     M -.->|strtok_r e strchr| R_METHOD
-     M -.->|Ponteiro de Memoria| R_PATH
-     M -.->|Ponteiro de Memoria| R_VER
-     M -.->|Ponteiro de Memoria| R_HEAD_K
-     M -.->|Ponteiro de Memoria| R_HEAD_V
-
-     style B fill:#2b2b2b,stroke:#ff5555,stroke-width:2px,color:#fff
-     style M fill:#2b2b2b,stroke:#55ff55,stroke-width:2px,color:#fff
-     style R_METHOD fill:#1e1e1e,stroke:#55aaff,color:#fff
-     style R_PATH fill:#1e1e1e,stroke:#55aaff,color:#fff
-     style R_VER fill:#1e1e1e,stroke:#55aaff,color:#fff
-     style R_HEAD_K fill:#1e1e1e,stroke:#ffaa00,color:#fff
-     style R_HEAD_V fill:#1e1e1e,stroke:#ffaa00,color:#fff
- ```
+## 🧩 **Parsing de Protocolo Zero-Copy (In-situ)**
+ * **Mecânica de Memória:** O parser opera diretamente no buffer da pilha. Delimitadores HTTP (`\r\n`, espaços, `?`) são substituídos por terminadores nulos (`\0`).
+ * **Otimização de Ponteiros:** A estrutura `http_request_t` mapeia seus ponteiros de caminho, versão e cabeçalhos diretamente para os endereços dentro do buffer original, eliminando `malloc` ou duplicação de strings.
 
 ---
 
 # 🔮 **Roadmap e Evolução Arquitetural (Versão 2)**
- Se a Versão 1 foca em **Fundamentos e Portabilidade POSIX**, a futura **Versão 2** terá como foco **Alta Performance Absoluta (C10K Problem)** e **Segurança Ofensiva**, acoplando-se especificamente às otimizações avançadas do Kernel do FreeBSD:
+ A Versão 2 abandonará a portabilidade POSIX básica para abraçar a performance extrema "bare-metal", focando em escalabilidade horizontal.
 
- 1. **I/O Multiplexing (kqueue/kevent):** Substituição do modelo `fork()` por um event-loop assíncrono utilizando `kqueue`, reduzindo drasticamente o overhead de *context switch* e permitindo milhares de conexões em uma única thread.
- 2. **Zero-Copy I/O (`sendfile`):** Otimização da entrega de recursos utilizando a syscall `sendfile(2)` do FreeBSD, transferindo dados diretamente do Page Cache do Kernel para o buffer do socket TCP.
- 3. **Sandboxing de Primitivas (Jails & Capsicum):** Execução do daemon isolado dentro de um `FreeBSD Jail` com o framework **Capsicum**, restringindo severamente a superfície de ataque em caso de exploração de vulnerabilidades.
+### **Proposta Técnica V2: Event-Driven & Zero-Copy I/O**
+ ```mermaid
+ graph TD
+     subgraph "Kernel Space"
+         K_NET[Network Stack]
+         K_SIG[Signals]
+         K_FS[Filesystem Cache]
+     end
+
+     subgraph "V2 Engine (User Space)"
+         EP[Event Multiplexer: kqueue / epoll]
+         TQ[Task Queue]
+
+         subgraph "Thread Pool"
+             T1[Thread 1]
+             T2[Thread 2]
+             TN[Thread N]
+         end
+     end
+
+     K_NET -- "O(1) Event" --> EP
+     K_SIG -- "Signal Event" --> EP
+     EP -- "Dispatch" --> TQ
+     TQ -- "Pop" --> T1
+
+     T1 -- "syscall: sendfile()" --> K_FS
+     K_FS -- "Direct DMA" --> K_NET
+
+     style EP fill:#3b82f6,stroke:#fff,color:#fff
+     style TQ fill:#1e293b,stroke:#fff,color:#fff
+ ```
+
+ 1. **I/O Multiplexing (kqueue/kevent):** Substituição do modelo `fork()` por um loop de eventos único no FreeBSD, permitindo milhares de conexões simultâneas com custo de memória quase nulo.
+ 2. **Zero-Copy I/O (`sendfile`):** Uso da syscall `sendfile(2)` para transferir arquivos diretamente do Page Cache para o buffer do socket, saltando o espaço de usuário.
+ 3. **Thread Pooling:** Transição para threads persistentes, eliminando o custo de criação de processos e reduzindo o *Context Switching*.
 
 ---
 
@@ -182,22 +160,25 @@
  Além dos links oficiais, este repositório contém cópias locais da documentação e scripts de automação para facilitar o desenvolvimento no ambiente FreeBSD e Linux.
 
 ## 📚 **Livros (PDF Offline)**
- Estes arquivos estão localizados na pasta [`FreeBSD/Books/`](https://www.google.com/search?q=./FreeBSD/Books/).
+ Estes arquivos estão localizados na pasta [`./FreeBSD/Books/`](./FreeBSD/Books/).
 
  | 📄 Documento | 🔗 Link Local | 📝 Descrição |
  | --- | --- | --- |
- | **FreeBSD Handbook** | **[`FreeBSD Handbook.pdf`](https://www.google.com/search?q=./FreeBSD/Books/FreeBSD%2520Handbook.pdf)** | O guia definitivo de instalação, administração e uso geral do sistema. |
- | **FreeBSD Developers' Handbook** | **[`FreeBSD Developers' Handbook.pdf`](https://www.google.com/search?q=./FreeBSD/Books/FreeBSD%2520Developers%27%2520Handbook.pdf)** | Guia avançado focado em programação de Kernel, Sockets e IPC. |
- | **FreeBSD Architecture Handbook** | **[`FreeBSD Architecture Handbook.pdf`](https://www.google.com/search?q=./FreeBSD/Books/FreeBSD%2520Architecture%2520Handbook.pdf)** | Detalhes profundos sobre a estrutura e os subsistemas do kernel. |
- | **Design and Implementation of 4.4BSD** | **[`The Design and Implementation of the 4.4BSD Operating System.pdf`](https://www.google.com/search?q=./FreeBSD/Books/The%2520Design%2520and%2520Implementation%2520of%2520the%25204.4BSD%2520Operating%2520System.pdf)** | Livro clássico sobre a base de design do 4.4BSD (origem do FreeBSD). |
- | **FreeBSD Porter’s Handbook** | **[`FreeBSD Porter’s Handbook.pdf`](https://www.google.com/search?q=./FreeBSD/Books/FreeBSD%2520Porter%E2%80%99s%2520Handbook.pdf)** | Guia oficial para criar "ports" e empacotar softwares de terceiros. |
- | **FreeBSD FAQ** | **[`Frequently Asked Questions for FreeBSD.pdf`](https://www.google.com/search?q=./FreeBSD/Books/Frequently%2520Asked%2520Questions%2520for%2520FreeBSD.pdf)** | Perguntas frequentes e soluções rápidas de problemas comuns. |
- | **FreeBSD Documentation Primer** | **[`FreeBSD Documentation Project Primer for New Contributors.pdf`](https://www.google.com/search?q=./FreeBSD/Books/FreeBSD%2520Documentation%2520Project%2520Primer%2520for%2520New%2520Contributors.pdf)** | Manual para novos contribuidores do projeto de documentação oficial. |
- | **FreeBSD Project Model** | **[`A project model for the FreeBSD Project.pdf`](https://www.google.com/search?q=./FreeBSD/Books/A%2520project%2520model%2520for%2520the%2520FreeBSD%2520Project.pdf)** | Estudo sobre a estrutura organizacional e governança do projeto. |
- | **FreeBSD Accessibility Handbook** | **[`FreeBSD Accessibility Handbook.pdf`](https://www.google.com/search?q=./FreeBSD/Books/FreeBSD%2520Accessibility%2520Handbook.pdf)** | Guia de utilização e configuração de recursos de acessibilidade. |
+ | **FreeBSD Handbook** | [`FreeBSD Handbook.pdf`](./FreeBSD/Books/FreeBSD%20Handbook.pdf) | O guia definitivo de instalação, administração e uso geral do sistema. |
+ | **FreeBSD Developers' Handbook** | [`FreeBSD Developers' Handbook.pdf`](./FreeBSD/Books/FreeBSD%20Developers%27%20Handbook.pdf) | Guia avançado focado em programação de Kernel, Sockets e IPC. |
+ | **FreeBSD Architecture Handbook** | [`FreeBSD Architecture Handbook.pdf`](./FreeBSD/Books/FreeBSD%20Architecture%20Handbook.pdf) | Detalhes profundos sobre a estrutura e os subsistemas do kernel. |
+ | **Design and Implementation of 4.4BSD** | [`The Design and Implementation of the 4.4BSD Operating System.pdf`](./FreeBSD/Books/The%20Design%20and%20Implementation%20of%20the%204.4BSD%20Operating%20System.pdf) | Livro clássico sobre a base de design do 4.4BSD (origem do FreeBSD). |
+ | **FreeBSD Porter’s Handbook** | [`FreeBSD Porter’s Handbook.pdf`](./FreeBSD/Books/FreeBSD%20Porter%E2%80%99s%20Handbook.pdf) | Guia oficial para criar "ports" e empacotar softwares de terceiros. |
+ | **FreeBSD FAQ** | [`Frequently Asked Questions for FreeBSD.pdf`](./FreeBSD/Books/Frequently%20Asked%20Questions%20for%20FreeBSD.pdf) | Perguntas frequentes e soluções rápidas de problemas comuns. |
+ | **FreeBSD Documentation Primer** | [`FreeBSD Documentation Project Primer for New Contributors.pdf`](./FreeBSD/Books/FreeBSD%20Documentation%20Project%20Primer%20for%20New%20Contributors.pdf) | Manual para novos contribuidores do projeto de documentação oficial. |
+ | **FreeBSD Project Model** | [`A project model for the FreeBSD Project.pdf`](./FreeBSD/Books/A%20project%20model%20for%20the%20FreeBSD%20Project.pdf) | Estudo sobre a estrutura organizacional e governança do projeto. |
+ | **FreeBSD Accessibility Handbook** | [`FreeBSD Accessibility Handbook.pdf`](./FreeBSD/Books/FreeBSD%20Accessibility%20Handbook.pdf) | Guia de utilização e configuração de recursos de acessibilidade. |
 
 ## ⚙️ **Scripts de Configuração**
- Scripts utilitários localizados na pasta [`FreeBSD/Scripts/`](https://www.google.com/search?q=./FreeBSD/Scripts/) para auxiliar na preparação do ambiente.
+ Scripts utilitários localizados na pasta [`./FreeBSD/Scripts/`](./FreeBSD/Scripts/) para auxiliar na preparação do ambiente.
 
- * **[`install.sh`](https://www.google.com/search?q=./FreeBSD/Scripts/install.sh)**: Script para instalação das dependências (GCC, Gmake) e compilação do projeto.
- * **[`setup.sh`](https://www.google.com/search?q=./FreeBSD/Scripts/setup.sh)**: Script para configuração inicial do ambiente (variáveis, permissões de diretórios web, etc).
+ * **[`install.sh`](./FreeBSD/Scripts/install.sh)**: Script para instalação das dependências (GCC, Gmake) e compilação do projeto.
+ * **[`setup.sh`](./FreeBSD/Scripts/setup.sh)**: Script para configuração inicial do ambiente (variáveis e permissões).
+ * **[`connect.sh`](./FreeBSD/Scripts/connect.sh)**: Script para testes de conectividade e sockets.
+ * **[`download.sh`](./FreeBSD/Scripts/download.sh)**: Script para baixar recursos adicionais ou PDFs atualizados.
+ * **[`uninstall.sh`](./FreeBSD/Scripts/uninstall.sh)**: Script para limpeza completa de dependências e binários.
